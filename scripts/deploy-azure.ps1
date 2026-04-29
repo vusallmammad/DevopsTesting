@@ -572,7 +572,6 @@ else {
         "--geo-redundant-backup", "Disabled",
         "--high-availability", "Disabled",
         "--public-access", "0.0.0.0",
-        "--create-default-database", "Disabled",
         "--yes"
     )
 }
