@@ -1,0 +1,13 @@
+bin/
+obj/
+.dotnet/
+.vs/
+.vscode/
+*.user
+*.suo
+*.db
+*.log
+.env
+.tmp/
+NuGet/
+.templateengine/

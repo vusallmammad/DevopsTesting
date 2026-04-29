@@ -1,0 +1,7 @@
+**/bin/
+**/obj/
+.dotnet/
+.git/
+.vs/
+.vscode/
+docker-compose.override.yml

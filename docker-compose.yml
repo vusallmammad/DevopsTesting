@@ -1,0 +1,324 @@
+name: game-website-practice
+
+x-mock-api: &mock-api
+  build:
+    context: .
+    dockerfile: src/GameWebsite.MockApi/Dockerfile
+  restart: unless-stopped
+  environment: &mock-api-env
+    ASPNETCORE_ENVIRONMENT: Development
+    ASPNETCORE_URLS: "http://+:8080;http://+:8081"
+    DB_USER: game
+    DB_PASSWORD: game_dev_password
+    DB_PORT: "5432"
+
+x-postgres: &postgres
+  image: postgres:17
+  restart: unless-stopped
+  environment: &postgres-env
+    POSTGRES_USER: game
+    POSTGRES_PASSWORD: game_dev_password
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U game -d $$POSTGRES_DB"]
+    interval: 5s
+    timeout: 5s
+    retries: 20
+    start_period: 10s
+
+services:
+  api-gateway:
+    build:
+      context: .
+      dockerfile: src/GameWebsite.ApiGateway/Dockerfile
+    image: game-website-api-gateway
+    container_name: game-api-gateway
+    restart: unless-stopped
+    ports:
+      - "5000:8080"
+      - "7000:8081"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: "http://+:8080;http://+:8081"
+      SECURITY_API_URL: http://security-api:8080
+      PROFILE_API_URL: http://profile-api:8080
+      GAME_API_URL: http://game-api:8080
+      STORE_API_URL: http://store-api:8080
+      NOTIFICATION_API_URL: http://notification-api:8080
+      TOURNAMENTS_API_URL: http://tournaments-api:8080
+      MATCHUP_API_URL: http://matchup-api:8080
+      TEAMS_API_URL: http://teams-api:8080
+    depends_on:
+      - security-api
+      - profile-api
+      - game-api
+      - store-api
+      - notification-api
+      - tournaments-api
+      - matchup-api
+      - teams-api
+
+  security-api:
+    <<: *mock-api
+    image: game-website-security-api
+    container_name: game-security-api
+    ports:
+      - "5015:8080"
+      - "7171:8081"
+    environment:
+      <<: *mock-api-env
+      SERVICE_KEY: security
+      SERVICE_TITLE: Security API
+      DB_KIND: postgres
+      DB_HOST: security-db
+      DB_NAME: security
+    depends_on:
+      security-db:
+        condition: service_healthy
+
+  profile-api:
+    <<: *mock-api
+    image: game-website-profile-api
+    container_name: game-profile-api
+    ports:
+      - "5016:8080"
+      - "7172:8081"
+    environment:
+      <<: *mock-api-env
+      SERVICE_KEY: profile
+      SERVICE_TITLE: Profile API
+      DB_KIND: postgres
+      DB_HOST: profile-db
+      DB_NAME: profile
+    depends_on:
+      profile-db:
+        condition: service_healthy
+
+  tournaments-api:
+    <<: *mock-api
+    image: game-website-tournaments-api
+    container_name: game-tournaments-api
+    ports:
+      - "5017:8080"
+      - "7173:8081"
+    environment:
+      <<: *mock-api-env
+      SERVICE_KEY: tournaments
+      SERVICE_TITLE: Tournaments API
+      DB_KIND: postgres
+      DB_HOST: tournaments-db
+      DB_NAME: tournaments
+    depends_on:
+      tournaments-db:
+        condition: service_healthy
+
+  teams-api:
+    <<: *mock-api
+    image: game-website-teams-api
+    container_name: game-teams-api
+    ports:
+      - "5018:8080"
+      - "7121:8081"
+    environment:
+      <<: *mock-api-env
+      SERVICE_KEY: teams
+      SERVICE_TITLE: Teams API
+      DB_KIND: postgres
+      DB_HOST: teams-db
+      DB_NAME: teams
+    depends_on:
+      teams-db:
+        condition: service_healthy
+
+  matchup-api:
+    <<: *mock-api
+    image: game-website-matchup-api
+    container_name: game-matchup-api
+    ports:
+      - "5019:8080"
+      - "7175:8081"
+    environment:
+      <<: *mock-api-env
+      SERVICE_KEY: matchup
+      SERVICE_TITLE: Matchup API
+      DB_KIND: postgres
+      DB_HOST: matchup-db
+      DB_NAME: matchup
+    depends_on:
+      matchup-db:
+        condition: service_healthy
+
+  store-api:
+    <<: *mock-api
+    image: game-website-store-api
+    container_name: game-store-api
+    ports:
+      - "5020:8080"
+      - "7174:8081"
+    environment:
+      <<: *mock-api-env
+      SERVICE_KEY: store
+      SERVICE_TITLE: Store API
+      DB_KIND: postgres
+      DB_HOST: store-db
+      DB_NAME: store
+    depends_on:
+      store-db:
+        condition: service_healthy
+
+  game-api:
+    <<: *mock-api
+    image: game-website-game-api
+    container_name: game-game-api
+    ports:
+      - "5021:8080"
+      - "7170:8081"
+    environment:
+      <<: *mock-api-env
+      SERVICE_KEY: game
+      SERVICE_TITLE: Game API
+      DB_KIND: postgres
+      DB_HOST: game-db
+      DB_NAME: game
+    depends_on:
+      game-db:
+        condition: service_healthy
+
+  notification-api:
+    <<: *mock-api
+    image: game-website-notification-api
+    container_name: game-notification-api
+    ports:
+      - "5022:8080"
+      - "7182:8081"
+    environment:
+      <<: *mock-api-env
+      SERVICE_KEY: notification
+      SERVICE_TITLE: Notification API
+      DB_KIND: memory
+      DB_HOST: notification-memory
+      DB_NAME: notification
+
+  security-db:
+    <<: *postgres
+    container_name: game-security-db
+    ports:
+      - "5433:5432"
+    environment:
+      <<: *postgres-env
+      POSTGRES_DB: security
+    volumes:
+      - security-db-data:/var/lib/postgresql/data
+      - ./db/postgres/security.sql:/docker-entrypoint-initdb.d/001-security.sql:ro
+
+  profile-db:
+    <<: *postgres
+    container_name: game-profile-db
+    ports:
+      - "5434:5432"
+    environment:
+      <<: *postgres-env
+      POSTGRES_DB: profile
+    volumes:
+      - profile-db-data:/var/lib/postgresql/data
+      - ./db/postgres/profile.sql:/docker-entrypoint-initdb.d/001-profile.sql:ro
+
+  game-db:
+    <<: *postgres
+    container_name: game-game-db
+    ports:
+      - "5435:5432"
+    environment:
+      <<: *postgres-env
+      POSTGRES_DB: game
+    volumes:
+      - game-db-data:/var/lib/postgresql/data
+      - ./db/postgres/game.sql:/docker-entrypoint-initdb.d/001-game.sql:ro
+
+  store-db:
+    <<: *postgres
+    container_name: game-store-db
+    ports:
+      - "5436:5432"
+    environment:
+      <<: *postgres-env
+      POSTGRES_DB: store
+    volumes:
+      - store-db-data:/var/lib/postgresql/data
+      - ./db/postgres/store.sql:/docker-entrypoint-initdb.d/001-store.sql:ro
+
+  teams-db:
+    <<: *postgres
+    container_name: game-teams-db
+    ports:
+      - "5437:5432"
+    environment:
+      <<: *postgres-env
+      POSTGRES_DB: teams
+    volumes:
+      - teams-db-data:/var/lib/postgresql/data
+      - ./db/postgres/teams.sql:/docker-entrypoint-initdb.d/001-teams.sql:ro
+
+  matchup-db:
+    <<: *postgres
+    container_name: game-matchup-db
+    ports:
+      - "5438:5432"
+    environment:
+      <<: *postgres-env
+      POSTGRES_DB: matchup
+    volumes:
+      - matchup-db-data:/var/lib/postgresql/data
+      - ./db/postgres/matchup.sql:/docker-entrypoint-initdb.d/001-matchup.sql:ro
+
+  tournaments-db:
+    <<: *postgres
+    container_name: game-tournaments-db
+    ports:
+      - "5439:5432"
+    environment:
+      <<: *postgres-env
+      POSTGRES_DB: tournaments
+    volumes:
+      - tournaments-db-data:/var/lib/postgresql/data
+      - ./db/postgres/tournaments.sql:/docker-entrypoint-initdb.d/001-tournaments.sql:ro
+
+  chat-db:
+    image: cassandra:5.0
+    container_name: game-chat-db
+    restart: unless-stopped
+    ports:
+      - "9042:9042"
+    environment:
+      CASSANDRA_CLUSTER_NAME: GameWebsitePractice
+      CASSANDRA_DC: dc1
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+    volumes:
+      - chat-db-data:/var/lib/cassandra
+      - ./db/cassandra:/schema:ro
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe keyspaces'"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 45s
+
+  cassandra-init:
+    image: cassandra:5.0
+    container_name: game-chat-db-init
+    depends_on:
+      chat-db:
+        condition: service_healthy
+    volumes:
+      - ./db/cassandra:/schema:ro
+    entrypoint: ["/bin/sh", "-c", "cqlsh chat-db 9042 -f /schema/chat.cql"]
+    restart: "no"
+
+volumes:
+  security-db-data:
+  profile-db-data:
+  game-db-data:
+  store-db-data:
+  teams-db-data:
+  matchup-db-data:
+  tournaments-db-data:
+  chat-db-data:

@@ -1,0 +1,44 @@
+@gateway = http://localhost:5000
+
+### Gateway routes
+GET {{gateway}}/routes
+
+### Gateway health
+GET {{gateway}}/health
+
+### Security API through gateway
+GET {{gateway}}/security/api/users
+
+### Login through gateway
+POST {{gateway}}/security/api/auth/login
+Content-Type: application/json
+
+{
+  "userName": "demo",
+  "password": "demo"
+}
+
+### Profile API through gateway
+GET {{gateway}}/profile/api/profiles
+
+### Game API through gateway
+POST {{gateway}}/game/api/games/game-001/sessions
+
+### Store API through gateway
+POST {{gateway}}/store/api/orders/checkout
+Content-Type: application/json
+
+{
+  "userId": "usr-001",
+  "productId": "product-001",
+  "total": 9.99
+}
+
+### Teams API through gateway
+POST {{gateway}}/teams/api/teams/team-001/members
+Content-Type: application/json
+
+{
+  "userId": "usr-003",
+  "role": "Member"
+}
