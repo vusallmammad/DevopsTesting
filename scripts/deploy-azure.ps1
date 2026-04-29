@@ -297,24 +297,68 @@ function Install-Cassandra {
         return
     }
 
-    $script = @"
+    $script = @'
 set -eux
 export DEBIAN_FRONTEND=noninteractive
+
+sudo apt update
+sudo apt install -y ca-certificates curl gnupg apt-transport-https openjdk-17-jre-headless
+
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://downloads.apache.org/cassandra/KEYS | sudo gpg --dearmor --yes -o /etc/apt/keyrings/apache-cassandra.gpg
+echo "deb [signed-by=/etc/apt/keyrings/apache-cassandra.gpg] https://debian.cassandra.apache.org 50x main" | sudo tee /etc/apt/sources.list.d/cassandra.sources.list
+
 sudo apt update
 sudo apt install -y cassandra
-if [ -f /etc/cassandra/cassandra.yaml ]; then
-  sudo cp /etc/cassandra/cassandra.yaml /etc/cassandra/cassandra.yaml.bak.`$(date +%s)
-  sudo sed -i "s/^listen_address:.*/listen_address: $PrivateIp/" /etc/cassandra/cassandra.yaml
-  sudo sed -i "s/^rpc_address:.*/rpc_address: 0.0.0.0/" /etc/cassandra/cassandra.yaml
-  if grep -Eq '^#?broadcast_rpc_address:' /etc/cassandra/cassandra.yaml; then
-    sudo sed -i "s/^#*broadcast_rpc_address:.*/broadcast_rpc_address: $PrivateIp/" /etc/cassandra/cassandra.yaml
-  else
-    echo "broadcast_rpc_address: $PrivateIp" | sudo tee -a /etc/cassandra/cassandra.yaml
-  fi
+
+sudo systemctl stop cassandra || true
+
+if [ ! -f /etc/cassandra/cassandra.yaml ]; then
+  echo "Missing /etc/cassandra/cassandra.yaml after install" >&2
+  exit 1
 fi
+
+sudo cp /etc/cassandra/cassandra.yaml /etc/cassandra/cassandra.yaml.bak.$(date +%s)
+sudo sed -i "s/^listen_address:.*/listen_address: __PRIVATE_IP__/" /etc/cassandra/cassandra.yaml
+sudo sed -i "s/^# *listen_address:.*/listen_address: __PRIVATE_IP__/" /etc/cassandra/cassandra.yaml
+sudo sed -i "s/^rpc_address:.*/rpc_address: 0.0.0.0/" /etc/cassandra/cassandra.yaml
+sudo sed -i "s/^# *rpc_address:.*/rpc_address: 0.0.0.0/" /etc/cassandra/cassandra.yaml
+
+if grep -Eq '^#?broadcast_rpc_address:' /etc/cassandra/cassandra.yaml; then
+  sudo sed -i "s/^#*broadcast_rpc_address:.*/broadcast_rpc_address: __PRIVATE_IP__/" /etc/cassandra/cassandra.yaml
+else
+  echo "broadcast_rpc_address: __PRIVATE_IP__" | sudo tee -a /etc/cassandra/cassandra.yaml
+fi
+
+if grep -Eq '^[[:space:]]+- seeds:' /etc/cassandra/cassandra.yaml; then
+  sudo sed -i 's/^\([[:space:]]*- seeds: \).*/\1"__PRIVATE_IP__"/' /etc/cassandra/cassandra.yaml
+fi
+
+sudo systemctl daemon-reload
 sudo systemctl enable cassandra
 sudo systemctl start cassandra || sudo systemctl restart cassandra
-"@
+
+for i in $(seq 1 40); do
+  if systemctl is-active --quiet cassandra; then
+    break
+  fi
+  sleep 5
+done
+
+sudo systemctl status cassandra --no-pager
+
+for i in $(seq 1 60); do
+  if nodetool status; then
+    exit 0
+  fi
+  sleep 5
+done
+
+echo "Cassandra service started, but nodetool did not report a healthy node in time." >&2
+exit 1
+'@
+
+    $script = $script.Replace("__PRIVATE_IP__", $PrivateIp)
 
     $tempScript = [System.IO.Path]::GetTempFileName()
     Set-Content -Path $tempScript -Value $script -Encoding utf8

@@ -253,20 +253,24 @@ psql "host=<postgres-fqdn> port=5432 dbname=security user=gameadmin sslmode=requ
 
 ## Verify Azure Cassandra
 
-The Cassandra VM is private by default. To verify Cassandra without exposing it publicly, use Azure VM Run Command:
+The Cassandra VM is private by default. The deploy script installs Cassandra from the official Apache Cassandra Debian repository, configures it to listen on the VM private IP, and verifies startup with `systemctl` and `nodetool status`.
+
+To verify Cassandra without exposing it publicly, use Azure VM Run Command:
 
 ```powershell
 az vm run-command invoke `
   --resource-group rg-game `
   --name vm-cassandra `
   --command-id RunShellScript `
-  --scripts "cqlsh 127.0.0.1 9042 -e 'DESCRIBE KEYSPACES;'"
+  --scripts "systemctl status cassandra --no-pager; nodetool status; cqlsh 127.0.0.1 9042 -e 'DESCRIBE KEYSPACES;'"
 ```
 
 To SSH into the VM, connect from a machine that can reach `vnet-game`, such as a VPN, Bastion, or jumpbox:
 
 ```bash
 ssh azureuser@<cassandra-private-ip>
+sudo systemctl status cassandra --no-pager
+nodetool status
 cqlsh 127.0.0.1 9042
 ```
 
