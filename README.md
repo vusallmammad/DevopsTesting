@@ -170,14 +170,28 @@ No Azure Container Registry is used.
 
 ## Azure Deployment
 
-The script `scripts/deploy-aca.ps1` deploys the low-cost Azure version:
+The script `scripts/deploy-azure.ps1` deploys the startup-friendly Azure version:
 
 - API gateway and APIs on Azure Container Apps
 - One Azure Database for PostgreSQL Flexible Server
 - Separate databases inside the same PostgreSQL server
 - GHCR images directly, not Azure Container Registry
+- Cassandra on a small Ubuntu Linux VM
 - No Azure Storage Account
-- No Cassandra deployment for now
+- No managed Cassandra
+- No Cassandra inside Container Apps
+
+Azure resources:
+
+| Resource | Name |
+| --- | --- |
+| Resource group | `rg-game` |
+| Container Apps environment | `cae-game` |
+| PostgreSQL Flexible Server | `pg-game` |
+| Cassandra VM | `vm-cassandra` |
+| VNet | `vnet-game` |
+
+The Container Apps environment and Cassandra VM are placed in the same VNet. The Cassandra VM has no public IP by default; NSG rules allow TCP `9042` from the Container Apps subnet.
 
 Run:
 
@@ -186,10 +200,10 @@ az login
 
 $env:POSTGRES_ADMIN_PASSWORD = '<use-a-strong-password>'
 
-.\scripts\deploy-aca.ps1 `
-  -ResourceGroup rg-game-website `
+.\scripts\deploy-azure.ps1 `
+  -ResourceGroup rg-game `
   -Location eastus `
-  -PostgresServerName pg-game-website `
+  -PostgresServerName pg-game `
   -PostgresAdminUser gameadmin `
   -PostgresAdminPassword $env:POSTGRES_ADMIN_PASSWORD `
   -GitHubOwner vusallmammad `
@@ -204,6 +218,85 @@ $env:GHCR_TOKEN = '<github-pat-with-read-packages>'
 ```
 
 Then run the same deployment command.
+
+The script prints:
+
+- Gateway public URL
+- PostgreSQL FQDN
+- Cassandra VM private IP
+- Cassandra connection string
+- Container App names
+- Cleanup command
+
+## Verify Azure PostgreSQL
+
+The script creates these databases in the same Flexible Server:
+
+```text
+security
+profile
+game
+store
+teams
+matchup
+tournaments
+```
+
+It also prints optional `psql` commands for applying the SQL files under `db/postgres`. If running `psql` from your workstation, add your current client IP to the PostgreSQL Flexible Server firewall first.
+
+Example:
+
+```powershell
+$env:PGPASSWORD = '<postgres-admin-password>'
+psql "host=<postgres-fqdn> port=5432 dbname=security user=gameadmin sslmode=require" -f .\db\postgres\security.sql
+```
+
+## Verify Azure Cassandra
+
+The Cassandra VM is private by default. To verify Cassandra without exposing it publicly, use Azure VM Run Command:
+
+```powershell
+az vm run-command invoke `
+  --resource-group rg-game `
+  --name vm-cassandra `
+  --command-id RunShellScript `
+  --scripts "cqlsh 127.0.0.1 9042 -e 'DESCRIBE KEYSPACES;'"
+```
+
+To SSH into the VM, connect from a machine that can reach `vnet-game`, such as a VPN, Bastion, or jumpbox:
+
+```bash
+ssh azureuser@<cassandra-private-ip>
+cqlsh 127.0.0.1 9042
+```
+
+The deploy script passes these env vars to the notification API for future chat/Cassandra wiring:
+
+```text
+CASSANDRA_HOST=<vm-private-ip>
+CASSANDRA_PORT=9042
+```
+
+TODO: the current app code does not define or read Cassandra-specific environment variables yet.
+
+## Test Azure API Gateway
+
+After deployment, use the gateway URL printed by the script:
+
+```powershell
+Invoke-RestMethod https://<gateway-fqdn>/routes
+Invoke-RestMethod https://<gateway-fqdn>/security/api/users
+Invoke-RestMethod https://<gateway-fqdn>/notification/api/notifications
+```
+
+## Azure Cost Estimate
+
+For a light practice deployment, expect roughly `30-60 USD/month`, depending on region, VM availability, and traffic:
+
+- PostgreSQL `Standard_B1ms` with 32 GB storage is usually the main fixed cost.
+- `vm-cassandra` on `Standard_B1s` or `Standard_B2s` adds the Cassandra compute/disk cost.
+- Container Apps use min replicas `0`, so idle API cost is very low.
+- No Azure Container Registry, no managed Cassandra, and no Azure Storage Account are created.
 
 ## Build Without Docker
 
@@ -230,5 +323,5 @@ docker compose down -v
 Azure:
 
 ```powershell
-az group delete -n rg-game-website --yes
+az group delete -n rg-game --yes
 ```
