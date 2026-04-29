@@ -26,13 +26,34 @@ jobs:
       matrix:
         include:
           - image: game-website-api-gateway
-            dockerfile: src/GameWebsite.ApiGateway/Dockerfile
+            project: src/GameWebsite.ApiGateway/GameWebsite.ApiGateway.csproj
+            publish-dir: publish/GameWebsite.ApiGateway
+            dockerfile: src/GameWebsite.ApiGateway/Dockerfile.ci
           - image: game-website-mock-api
-            dockerfile: src/GameWebsite.MockApi/Dockerfile
+            project: src/GameWebsite.MockApi/GameWebsite.MockApi.csproj
+            publish-dir: publish/GameWebsite.MockApi
+            dockerfile: src/GameWebsite.MockApi/Dockerfile.ci
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Publish self-contained Linux app
+        run: >
+          dotnet publish ${{ matrix.project }}
+          --configuration Release
+          --runtime linux-x64
+          --self-contained true
+          --output ${{ matrix.publish-dir }}
+          -p:PublishSingleFile=true
+          -p:EnableCompressionInSingleFile=true
+          -p:DebugType=None
+          -p:DebugSymbols=false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
