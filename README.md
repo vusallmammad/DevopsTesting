@@ -191,7 +191,7 @@ Azure resources:
 | Cassandra VM | `vm-cassandra` |
 | VNet | `vnet-game` |
 
-The Container Apps environment and Cassandra VM are placed in the same VNet. The Cassandra VM has no public IP by default; NSG rules allow TCP `9042` from the Container Apps subnet.
+The Container Apps environment and Cassandra VM are placed in the same VNet. The Cassandra VM has no public IP by default; NSG rules allow TCP `9042` from the Container Apps subnet. The script defaults the Cassandra VM to `Standard_B2s`; Cassandra 5.0 can be unreliable on `Standard_B1s` because the VM only has 1 GB of memory.
 
 Run:
 
@@ -209,6 +209,8 @@ $env:POSTGRES_ADMIN_PASSWORD = '<use-a-strong-password>'
   -GitHubOwner vusallmammad `
   -ImageTag latest
 ```
+
+PostgreSQL Flexible Server names are globally unique in Azure DNS. If `pg-game` is unavailable, pass a unique value such as `pg-game-vusalmammad`.
 
 For private GHCR packages:
 
@@ -265,6 +267,16 @@ az vm run-command invoke `
   --scripts "systemctl status cassandra --no-pager; nodetool status; cqlsh 127.0.0.1 9042 -e 'DESCRIBE KEYSPACES;'"
 ```
 
+If Cassandra fails during deploy, inspect the VM logs:
+
+```powershell
+az vm run-command invoke `
+  --resource-group rg-game `
+  --name vm-cassandra `
+  --command-id RunShellScript `
+  --scripts "journalctl -u cassandra -n 200 --no-pager; tail -n 200 /var/log/cassandra/system.log"
+```
+
 To SSH into the VM, connect from a machine that can reach `vnet-game`, such as a VPN, Bastion, or jumpbox:
 
 ```bash
@@ -298,7 +310,7 @@ Invoke-RestMethod https://<gateway-fqdn>/notification/api/notifications
 For a light practice deployment, expect roughly `30-60 USD/month`, depending on region, VM availability, and traffic:
 
 - PostgreSQL `Standard_B1ms` with 32 GB storage is usually the main fixed cost.
-- `vm-cassandra` on `Standard_B1s` or `Standard_B2s` adds the Cassandra compute/disk cost.
+- `vm-cassandra` defaults to `Standard_B2s` so Cassandra has enough memory to start reliably.
 - Container Apps use min replicas `0`, so idle API cost is very low.
 - No Azure Container Registry, no managed Cassandra, and no Azure Storage Account are created.
 

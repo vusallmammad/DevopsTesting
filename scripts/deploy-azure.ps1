@@ -11,7 +11,7 @@ param(
     [string]$GhcrUsername = $env:GHCR_USERNAME,
     [string]$GhcrToken = $env:GHCR_TOKEN,
     [string]$CassandraVmName = "vm-cassandra",
-    [string]$CassandraVmSize = "Standard_B1s",
+    [string]$CassandraVmSize = "Standard_B2s",
     [string]$VmAdminUser = "azureuser",
     [string]$SshPublicKeyPath = "$HOME/.ssh/id_rsa.pub",
     [switch]$SkipCassandraInstall
@@ -55,6 +55,31 @@ function Invoke-Az {
     if ($LASTEXITCODE -ne 0) {
         throw "Azure CLI command failed: az $($Arguments -join ' ')"
     }
+}
+
+function Wait-AzProvider {
+    param([Parameter(Mandatory = $true)][string]$Namespace)
+
+    Write-Host "Registering provider: $Namespace"
+    Invoke-Az @("provider", "register", "--namespace", $Namespace)
+
+    for ($i = 1; $i -le 60; $i++) {
+        $state = Get-AzTsv @(
+            "provider", "show",
+            "--namespace", $Namespace,
+            "--query", "registrationState"
+        )
+
+        if ($state -eq "Registered") {
+            Write-Host "Provider registered: $Namespace"
+            return
+        }
+
+        Write-Host "Waiting for provider $Namespace registration. Current state: $state"
+        Start-Sleep -Seconds 10
+    }
+
+    throw "Timed out waiting for Azure provider registration: $Namespace"
 }
 
 function Get-AzTsv {
@@ -298,15 +323,17 @@ function Install-Cassandra {
     }
 
     $script = @'
+#!/usr/bin/env bash
 set -eux
 export DEBIAN_FRONTEND=noninteractive
 
 sudo apt update
-sudo apt install -y ca-certificates curl gnupg apt-transport-https openjdk-17-jre-headless
+sudo apt install -y ca-certificates curl gnupg apt-transport-https openjdk-17-jre-headless python3
 
 sudo install -d -m 0755 /etc/apt/keyrings
-curl -fsSL https://downloads.apache.org/cassandra/KEYS | sudo gpg --dearmor --yes -o /etc/apt/keyrings/apache-cassandra.gpg
-echo "deb [signed-by=/etc/apt/keyrings/apache-cassandra.gpg] https://debian.cassandra.apache.org 50x main" | sudo tee /etc/apt/sources.list.d/cassandra.sources.list
+curl -fsSL https://downloads.apache.org/cassandra/KEYS | sudo tee /etc/apt/keyrings/apache-cassandra.asc >/dev/null
+sudo chmod 0644 /etc/apt/keyrings/apache-cassandra.asc
+echo "deb [signed-by=/etc/apt/keyrings/apache-cassandra.asc] https://debian.cassandra.apache.org 50x main" | sudo tee /etc/apt/sources.list.d/cassandra.sources.list
 
 sudo apt update
 sudo apt install -y cassandra
@@ -324,14 +351,28 @@ sudo sed -i "s/^# *listen_address:.*/listen_address: __PRIVATE_IP__/" /etc/cassa
 sudo sed -i "s/^rpc_address:.*/rpc_address: 0.0.0.0/" /etc/cassandra/cassandra.yaml
 sudo sed -i "s/^# *rpc_address:.*/rpc_address: 0.0.0.0/" /etc/cassandra/cassandra.yaml
 
-if grep -Eq '^#?broadcast_rpc_address:' /etc/cassandra/cassandra.yaml; then
-  sudo sed -i "s/^#*broadcast_rpc_address:.*/broadcast_rpc_address: __PRIVATE_IP__/" /etc/cassandra/cassandra.yaml
+if grep -Eq '^#?[[:space:]]*broadcast_rpc_address:' /etc/cassandra/cassandra.yaml; then
+  sudo sed -i "s/^#*[[:space:]]*broadcast_rpc_address:.*/broadcast_rpc_address: __PRIVATE_IP__/" /etc/cassandra/cassandra.yaml
 else
   echo "broadcast_rpc_address: __PRIVATE_IP__" | sudo tee -a /etc/cassandra/cassandra.yaml
 fi
 
 if grep -Eq '^[[:space:]]+- seeds:' /etc/cassandra/cassandra.yaml; then
   sudo sed -i 's/^\([[:space:]]*- seeds: \).*/\1"__PRIVATE_IP__"/' /etc/cassandra/cassandra.yaml
+fi
+
+if [ -f /etc/cassandra/cassandra-env.sh ]; then
+  if grep -Eq '^#?[[:space:]]*MAX_HEAP_SIZE=' /etc/cassandra/cassandra-env.sh; then
+    sudo sed -i 's/^#*[[:space:]]*MAX_HEAP_SIZE=.*/MAX_HEAP_SIZE="512M"/' /etc/cassandra/cassandra-env.sh
+  else
+    echo 'MAX_HEAP_SIZE="512M"' | sudo tee -a /etc/cassandra/cassandra-env.sh
+  fi
+
+  if grep -Eq '^#?[[:space:]]*HEAP_NEWSIZE=' /etc/cassandra/cassandra-env.sh; then
+    sudo sed -i 's/^#*[[:space:]]*HEAP_NEWSIZE=.*/HEAP_NEWSIZE="128M"/' /etc/cassandra/cassandra-env.sh
+  else
+    echo 'HEAP_NEWSIZE="128M"' | sudo tee -a /etc/cassandra/cassandra-env.sh
+  fi
 fi
 
 sudo systemctl daemon-reload
@@ -348,20 +389,24 @@ done
 sudo systemctl status cassandra --no-pager
 
 for i in $(seq 1 60); do
-  if nodetool status; then
+  if nodetool status | tee /tmp/cassandra-nodetool-status.txt && grep -Eq '^UN[[:space:]]' /tmp/cassandra-nodetool-status.txt; then
     exit 0
   fi
   sleep 5
 done
 
 echo "Cassandra service started, but nodetool did not report a healthy node in time." >&2
+sudo journalctl -u cassandra -n 200 --no-pager || true
+sudo tail -n 200 /var/log/cassandra/system.log || true
 exit 1
 '@
 
     $script = $script.Replace("__PRIVATE_IP__", $PrivateIp)
+    $script = $script -replace "`r`n", "`n"
 
     $tempScript = [System.IO.Path]::GetTempFileName()
-    Set-Content -Path $tempScript -Value $script -Encoding utf8
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    [System.IO.File]::WriteAllText($tempScript, $script, $utf8NoBom)
     try {
         Invoke-Az @(
             "vm", "run-command", "invoke",
@@ -385,10 +430,10 @@ Write-Host "Mock API image: $mockApiImage"
 Write-Host "Gateway image: $gatewayImage"
 
 Invoke-Az @("extension", "add", "--name", "containerapp", "--upgrade")
-Invoke-Az @("provider", "register", "--namespace", "Microsoft.App")
-Invoke-Az @("provider", "register", "--namespace", "Microsoft.DBforPostgreSQL")
-Invoke-Az @("provider", "register", "--namespace", "Microsoft.Compute")
-Invoke-Az @("provider", "register", "--namespace", "Microsoft.Network")
+Wait-AzProvider "Microsoft.App"
+Wait-AzProvider "Microsoft.DBforPostgreSQL"
+Wait-AzProvider "Microsoft.Compute"
+Wait-AzProvider "Microsoft.Network"
 
 Invoke-Az @("group", "create", "--name", $ResourceGroup, "--location", $Location)
 
