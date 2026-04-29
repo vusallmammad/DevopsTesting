@@ -1,10 +1,18 @@
 # Game Website Practice Lab
 
-This repo simulates the API and database shape from the screenshot: an API gateway, eight backend APIs, seven PostgreSQL databases, and one Cassandra chat database.
+This repo simulates the API and database shape from the screenshot: an API gateway, eight backend APIs, seven local PostgreSQL containers, and one local Cassandra chat database.
 
-The APIs are intentionally lightweight mock services. They keep API data in memory so you can practice routing, Docker, ports, service discovery, and deployment without first wiring a full ORM. The database containers still create real schemas and seed data for SQL/CQL practice.
+For Azure, the deployment is intentionally cheaper than the full local topology:
 
-## Topology
+- GitHub Actions builds Docker images.
+- Images are pushed to GitHub Container Registry, `ghcr.io`.
+- Azure Container Apps runs the gateway and APIs.
+- One Azure Database for PostgreSQL Flexible Server hosts separate databases per service.
+- No Azure Container Registry, no PostgreSQL containers in Azure, no Cassandra in Azure for now, and no Azure Storage Account.
+
+The APIs are lightweight mock services. They keep API data in memory so you can practice routing, Docker, ports, service discovery, and deployment without wiring a full ORM first. The PostgreSQL schemas are still real and can be applied to the managed Azure PostgreSQL databases.
+
+## Local Topology
 
 | Component | Local URL / port | Backing data |
 | --- | --- | --- |
@@ -17,7 +25,7 @@ The APIs are intentionally lightweight mock services. They keep API data in memo
 | Store API | http://localhost:5020 | `store-db` on localhost:5436 |
 | Game API | http://localhost:5021 | `game-db` on localhost:5435 |
 | Notification API | http://localhost:5022 | In-memory mock |
-| Chat DB | localhost:9042 | Cassandra keyspace `game_chat` |
+| Chat DB | localhost:9042 | Local Cassandra keyspace `game_chat` |
 
 Gateway route format:
 
@@ -38,11 +46,6 @@ Invoke-RestMethod http://localhost:5000/game/api/games
 ```powershell
 docker compose up --build -d
 docker compose ps
-```
-
-Smoke test:
-
-```powershell
 .\scripts\smoke-test.ps1
 ```
 
@@ -61,14 +64,22 @@ The request collection in `samples/game-website.http` works with VS Code REST Cl
 
 ## GitHub Actions Images
 
-The workflow in `.github/workflows/docker-images.yml` builds and pushes two images to GitHub Container Registry when code is pushed to `main`:
+The workflow in `.github/workflows/docker-images.yml` builds and pushes these images to GitHub Container Registry on pushes to `main`:
 
 ```text
 ghcr.io/vusallmammad/game-website-api-gateway:latest
 ghcr.io/vusallmammad/game-website-mock-api:latest
 ```
 
-The backend services in `docker-compose.yml` all use the same mock API image with different environment variables, so only one backend API image is needed.
+The workflow uses the automatic `GITHUB_TOKEN` and declares:
+
+```yaml
+permissions:
+  contents: read
+  packages: write
+```
+
+No GitHub Actions secrets are required for the image build and push.
 
 Pull locally after the workflow runs:
 
@@ -76,6 +87,8 @@ Pull locally after the workflow runs:
 docker pull ghcr.io/vusallmammad/game-website-api-gateway:latest
 docker pull ghcr.io/vusallmammad/game-website-mock-api:latest
 ```
+
+GHCR visibility note: Azure Container Apps can pull public GHCR images without credentials. If the GHCR packages are private, create a GitHub PAT with `read:packages`, then run the deploy script with `GHCR_USERNAME` and `GHCR_TOKEN` environment variables set.
 
 ## Database Practice
 
@@ -94,7 +107,7 @@ docker exec -it game-game-db psql -U game -d game
 docker exec -it game-chat-db cqlsh
 ```
 
-Cassandra query after opening `cqlsh`:
+Cassandra is local-only for now. Query after opening `cqlsh`:
 
 ```sql
 USE game_chat;
@@ -122,32 +135,90 @@ dotnet restore src/GameWebsite.ApiGateway/GameWebsite.ApiGateway.csproj --config
 dotnet build GameWebsitePractice.sln --no-restore -m:1
 ```
 
-## Azure Container Apps
+## Azure Deployment
 
-Yes, this can be hosted on Azure Container Apps. The recommended practice setup is:
+The script `scripts/deploy-aca.ps1` creates or reuses:
 
-1. Deploy the gateway with external ingress.
-2. Deploy each backend API with internal ingress.
-3. Let the gateway call backends by Container App name, for example `http://game-security-api`.
-4. Use managed databases for a real deployment: Azure Database for PostgreSQL for the Postgres services, and Cosmos DB Cassandra API or another managed Cassandra-compatible service for chat.
+- Resource group: `rg-game-website`
+- Container Apps environment: `cae-game-website`
+- PostgreSQL Flexible Server: `pg-game-website`
+- PostgreSQL SKU: `Standard_B1ms`, Burstable tier
+- PostgreSQL version: `16`
+- PostgreSQL storage: `32 GB`
+- Backup retention: `7 days`
+- High availability: disabled
+- Container Apps logs destination: `none`, to avoid Log Analytics cost
+- API replicas: min `0`, max `1`, `0.25` CPU, `0.5Gi` memory
 
-Run the starter deployment script:
+It creates these databases inside the same PostgreSQL server:
+
+```text
+security
+profile
+game
+store
+teams
+matchup
+tournaments
+```
+
+Run:
 
 ```powershell
 az login
-.\scripts\deploy-aca.ps1 -ResourceGroup rg-game-website-practice -Location eastus
+
+$env:POSTGRES_ADMIN_PASSWORD = '<use-a-strong-password>'
+
+.\scripts\deploy-aca.ps1 `
+  -ResourceGroup rg-game-website `
+  -Location eastus `
+  -PostgresServerName pg-game-website `
+  -PostgresAdminUser gameadmin `
+  -PostgresAdminPassword $env:POSTGRES_ADMIN_PASSWORD `
+  -GitHubOwner vusallmammad `
+  -ImageTag latest
 ```
 
-The script deploys the stateless APIs and gateway. It does not deploy database containers to Azure Container Apps, because production-style database hosting should use managed database services.
+For private GHCR packages:
 
-Microsoft docs used for the ACA shape:
+```powershell
+$env:GHCR_USERNAME = 'vusallmammad'
+$env:GHCR_TOKEN = '<github-pat-with-read-packages>'
+```
 
-- Container apps in the same environment can call each other by app name: https://learn.microsoft.com/azure/container-apps/connect-apps
-- Container Apps supports external and internal ingress: https://learn.microsoft.com/azure/container-apps/ingress-overview
+Then run the same deployment command.
 
-## Practice Ideas
+## SQL Initialization
 
-- Add real persistence to one API with Npgsql and the matching Postgres schema.
-- Add authentication checks in the gateway before forwarding requests.
-- Add new service routes, for example a `chat-api` that reads from Cassandra.
-- Convert the compose setup into separate ACA apps plus Azure managed databases.
+The deploy script creates all seven databases. If `psql` exists locally, the script temporarily allows your current public IP on the PostgreSQL firewall, runs these SQL files, then removes the temporary firewall rule:
+
+```text
+db/postgres/security.sql -> security
+db/postgres/profile.sql -> profile
+db/postgres/game.sql -> game
+db/postgres/store.sql -> store
+db/postgres/teams.sql -> teams
+db/postgres/matchup.sql -> matchup
+db/postgres/tournaments.sql -> tournaments
+```
+
+If `psql` is not available, the script prints the exact `psql` commands to run manually.
+
+## Estimated Monthly Cost
+
+For light practice use, cost should be dominated by Azure Database for PostgreSQL Flexible Server. A rough estimate in many US regions is low tens of USD per month for `Standard_B1ms` plus 32 GB storage. Azure Container Apps are configured with min replicas `0`, so idle API cost should be near zero and small traffic may fit inside the monthly free grants.
+
+Pricing changes by region and account type. Check the Azure Pricing Calculator before leaving resources running.
+
+## Cleanup
+
+```powershell
+az group delete -n rg-game-website --yes
+```
+
+## References
+
+- Azure Container Apps ingress supports internal and external ingress: https://learn.microsoft.com/azure/container-apps/ingress-overview
+- Container apps can call other apps in the same environment by app name: https://learn.microsoft.com/azure/container-apps/connect-apps
+- Container Apps environment logs can be set to `none`: https://learn.microsoft.com/azure/container-apps/log-options
+- PostgreSQL Flexible Server can use public access with the `0.0.0.0` Azure-services firewall rule: https://learn.microsoft.com/azure/postgresql/flexible-server/concepts-firewall-rules
